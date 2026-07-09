@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Kamkrle — a daily routine tracker with calendar history and 30-day performance trends.">
+    <meta name="theme-color" content="#090a0f" id="meta-theme-color">
+    <meta name="color-scheme" content="dark light">
+    <title>Kamkrle - Modern Productivity Dashboard</title>
+    <script>
+        // Applied before first paint so switching themes never flashes the old one.
+        // Kept inline (not in an external file) intentionally: it must run
+        // synchronously before CSS/paint, which an external, non-blocking
+        // script cannot guarantee.
+        (function () {
+            var saved = localStorage.getItem('orbit_theme');
+            var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+    <!-- Chart.js for Analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- jsPDF for the downloadable monthly report -->
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <!-- Supabase client for cross-device sync -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <!-- Google Fonts & Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Live wallpaper: ambient color blobs + subtle tech grid, purely visual -->
+    <div class="bg-blobs" aria-hidden="true">
+        <div class="blob blob-a"></div>
+        <div class="blob blob-b"></div>
+        <div class="blob blob-c"></div>
+    </div>
+    <div class="bg-grid" aria-hidden="true"></div>
+
+    <!-- Decorative animated 3D orbit rings, purely visual -->
+    <div class="orbit-bg" aria-hidden="true">
+        <div class="orbit-system">
+            <div class="orbit-ring ring-1">
+                <div class="orbit-spin spin-1"><span class="orbit-dot dot-1"></span></div>
+            </div>
+            <div class="orbit-ring ring-2">
+                <div class="orbit-spin spin-2"><span class="orbit-dot dot-2"></span></div>
+            </div>
+            <div class="orbit-ring ring-3">
+                <div class="orbit-spin spin-3"><span class="orbit-dot dot-3"></span></div>
+            </div>
+            <div class="orbit-core"></div>
+        </div>
+    </div>
+
+    <!-- Shown until the person signs in; gates the whole app behind Supabase auth -->
+    <div class="auth-overlay" id="auth-overlay">
+        <div class="auth-card">
+            <div class="logo-badge" aria-hidden="true">
+                <span class="material-icons-round">radar</span>
+            </div>
+            <h2 id="auth-title">Welcome back</h2>
+            <p class="auth-sub" id="auth-subtitle">Sign in to sync your routine across devices.</p>
+
+            <p class="auth-message" id="auth-message" role="alert"></p>
+
+            <p class="auth-hint" id="auth-email-hint" style="display: none;">
+                <span class="material-icons-round" aria-hidden="true">info</span>
+                <span>Please use a real email address. Fake or disposable emails won't receive the verification/reset link, and you could lose access to your account.</span>
+            </p>
+
+            <div class="auth-field" id="auth-email-field">
+                <label for="auth-email">Email</label>
+                <input type="email" id="auth-email" autocomplete="email" placeholder="you@example.com">
+            </div>
+            <div class="auth-field" id="auth-password-field">
+                <label for="auth-password" id="auth-password-label">Password</label>
+                <input type="password" id="auth-password" autocomplete="current-password" placeholder="At least 6 characters">
+            </div>
+
+            <div class="auth-loading" id="auth-loading">
+                <span class="material-icons-round" style="animation: spin 1s linear infinite; font-size: 1rem;">progress_activity</span>
+                Working on it...
+            </div>
+
+            <div class="auth-actions">
+                <button type="button" class="btn-primary full" id="auth-primary-btn" onclick="handleAuthSubmit()">Sign In</button>
+                <button type="button" class="btn-secondary-link" id="auth-forgot-btn" onclick="handleForgotPassword()">Forgot password?</button>
+                <button type="button" class="btn-secondary-link" id="auth-toggle-mode-btn" onclick="toggleAuthMode()">Don't have an account? Sign up</button>
+                <button type="button" class="btn-secondary-link" id="auth-guest-btn" onclick="handleGuestButtonClick()" style="color: var(--text-secondary);">Continue without an account</button>
+            </div>
+
+            <p class="auth-privacy-note">
+                <span class="material-icons-round" aria-hidden="true">lock</span>
+                <span>Your email is used only to sign you in and sync your data across devices. We never read, share, or sell the contents of your routines.</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Confirms a guest understands local-only storage before they proceed -->
+    <div class="guest-warning-overlay" id="guest-warning-overlay" role="dialog" aria-modal="true" aria-labelledby="guest-warning-title" style="display:none;" onclick="if (event.target === this) closeGuestWarning()">
+        <div class="guest-warning-card">
+            <div class="guest-warning-icon" aria-hidden="true">
+                <span class="material-icons-round">warning_amber</span>
+            </div>
+            <h2 id="guest-warning-title">Using Kamkrle without an account</h2>
+            <p class="guest-warning-body">
+                Without an account, your data is saved only in this browser, on this device. If you clear your browser data, switch browsers, or use another device, <strong>this progress will not be there and cannot be recovered.</strong>
+            </p>
+            <p class="guest-warning-body">
+                You can add an email at any time later to back up and sync everything you've tracked so far — nothing you do as a guest is wasted if you decide to do that.
+            </p>
+            <div class="guest-warning-actions">
+                <button type="button" class="btn-secondary-link" onclick="closeGuestWarning()">Go back</button>
+                <button type="button" class="btn-primary full" onclick="confirmContinueAsGuest()">I understand, continue as guest</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick usage tips, opened from the Help button in the header -->
+    <div class="help-overlay" id="help-overlay" role="dialog" aria-modal="true" aria-labelledby="help-title" style="display:none;" onclick="if (event.target === this) closeHelpModal()">
+        <div class="help-card">
+            <button type="button" class="help-close-btn" onclick="closeHelpModal()" aria-label="Close help">
+                <span class="material-icons-round" aria-hidden="true">close</span>
+            </button>
+            <h2 id="help-title">Quick Tips</h2>
+            <ul class="help-tip-list">
+                <li><strong>Daily Routine</strong> — check off today's tasks here. Scroll down for a 30-day heatmap of your consistency.</li>
+                <li><strong>Calendar Workspace</strong> — browse past months, see each day's completion %, and view a 30-day trend chart.</li>
+                <li><strong>Manage Routine</strong> — add up to 10 recurring tasks. Changes apply to today's checklist right away.</li>
+                <li><strong>Streaks</strong> — a "perfect day" means 100% of that day's tasks are checked off. Your streak counts consecutive perfect days.</li>
+                <li><strong>Sync & Theme</strong> — sign in to sync your routine across devices, and use the moon icon anytime to switch between day and night mode.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Shown right after logging in (guest or account) if no username is on
+         file yet. Not dismissable without entering one — no close button, no
+         backdrop-click dismiss. -->
+    <div class="username-overlay" id="username-overlay" role="dialog" aria-modal="true" aria-labelledby="username-title" style="display:none;">
+        <div class="auth-card username-card">
+            <div class="logo-badge username-badge" aria-hidden="true">
+                <span class="material-icons-round">waving_hand</span>
+            </div>
+            <h2 id="username-title">What should we call you?</h2>
+            <p class="auth-sub">Pick a name — we'll greet you with it every time you're here.</p>
+
+            <p class="auth-message" id="username-message" role="alert"></p>
+
+            <div class="auth-field">
+                <label for="username-input">Username</label>
+                <input type="text" id="username-input" autocomplete="nickname" placeholder="e.g. Alex" maxlength="24" oninput="updateUsernamePreview()">
+            </div>
+
+            <p class="username-preview" id="username-preview"></p>
+
+            <div class="auth-loading" id="username-loading">
+                <span class="material-icons-round" style="animation: spin 1s linear infinite; font-size: 1rem;">progress_activity</span>
+                Saving...
+            </div>
+
+            <button type="button" class="btn-primary full" id="username-submit-btn" onclick="submitUsernamePrompt()">Continue</button>
+        </div>
+    </div>
+
+    <div class="container" id="app-container" style="display:none;">
+
+        <!-- Shown only if localStorage is unavailable -->
+        <p class="storage-banner" id="storage-banner" role="alert">
+            ⚠️ Your browser is blocking local storage (e.g. private browsing mode), so progress won't be saved between visits.
+        </p>
+
+        <header>
+            <div class="logo-area">
+                <div class="logo-row">
+                    <div class="logo-badge" aria-hidden="true">
+                        <span class="material-icons-round">radar</span>
+                    </div>
+                    <div>
+                        <h1>KAMKRLE</h1>
+                        <p style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 2px;">Keep execution continuous.</p>
+                    </div>
+                </div>
+                <p class="header-greeting" id="header-greeting"></p>
+            </div>
+
+            <div class="header-controls">
+                <div class="nav-tabs" role="tablist" aria-label="Dashboard sections">
+                    <button type="button" class="tab-btn active" id="tab-routine-btn" role="tab" aria-selected="true" aria-controls="routine-view-panel" onclick="switchTab('routine-view')">
+                        <span class="material-icons-round" aria-hidden="true" style="font-size: 1.1rem;">check_circle</span> Daily Routine
+                    </button>
+                    <button type="button" class="tab-btn" id="tab-calendar-btn" role="tab" aria-selected="false" aria-controls="calendar-view-panel" onclick="switchTab('calendar-view')">
+                        <span class="material-icons-round" aria-hidden="true" style="font-size: 1.1rem;">calendar_month</span> Calendar Workspace
+                    </button>
+                    <button type="button" class="tab-btn" id="tab-manage-btn" role="tab" aria-selected="false" aria-controls="manage-view-panel" onclick="switchTab('manage-view')">
+                        <span class="material-icons-round" aria-hidden="true" style="font-size: 1.1rem;">settings</span> Manage Routine
+                    </button>
+                    <button type="button" class="tab-btn" id="tab-help-btn" onclick="openHelpModal()" aria-haspopup="dialog" aria-controls="help-overlay">
+                        <span class="material-icons-round" aria-hidden="true" style="font-size: 1.1rem;">help_outline</span> Help
+                    </button>
+                </div>
+
+                <div class="header-right">
+                    <div class="calendar-nav" id="calendar-controls" style="display: none;">
+                        <button type="button" class="btn-icon" aria-label="Previous month" onclick="changeMonth(-1)"><span class="material-icons-round" aria-hidden="true">chevron_left</span></button>
+                        <h2 id="current-month-year" class="month-year-heading"></h2>
+                        <button type="button" class="btn-icon" aria-label="Next month" onclick="changeMonth(1)"><span class="material-icons-round" aria-hidden="true">chevron_right</span></button>
+                    </div>
+                    <div class="header-clock" aria-label="Current date and time">
+                        <span class="header-clock-date" id="datetime-date"></span>
+                        <span class="header-clock-dot" aria-hidden="true">•</span>
+                        <span class="header-clock-time" id="datetime-time"></span>
+                    </div>
+                    <span class="sync-pill" id="sync-status-pill">
+                        <span class="material-icons-round" aria-hidden="true">cloud_done</span>
+                        <span id="sync-status-text">Synced</span>
+                    </span>
+                    <button type="button" class="theme-toggle" id="theme-toggle-btn" onclick="toggleTheme()" aria-label="Switch between day and dark mode">
+                        <span class="material-icons-round" id="theme-toggle-icon" aria-hidden="true">dark_mode</span>
+                    </button>
+                    <button type="button" class="theme-toggle" id="signout-btn" onclick="handleSignOut()" aria-label="Sign out" title="Sign out" style="display:none;">
+                        <span class="material-icons-round" aria-hidden="true">logout</span>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <section class="stats-grid" id="stats-grid-section" aria-label="Summary statistics">
+            <div class="stat-card">
+                <div class="stat-icon tone-accent"><span class="material-icons-round" aria-hidden="true">today</span></div>
+                <span class="label">Today's Progress</span>
+                <span class="value" id="stat-day-pct">0%</span>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon tone-accent"><span class="material-icons-round" aria-hidden="true">insights</span></div>
+                <span class="label">30-Day Avg</span>
+                <span class="value" id="stat-month-pct">0%</span>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon tone-warning"><span class="material-icons-round" aria-hidden="true">local_fire_department</span></div>
+                <span class="label">Current Streak</span>
+                <span class="value" id="stat-streak" style="color: var(--warning);">0 Days</span>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon tone-success"><span class="material-icons-round" aria-hidden="true">military_tech</span></div>
+                <span class="label">Perfect Days (This Month)</span>
+                <span class="value" id="stat-perfect" style="color: var(--success);">0</span>
+            </div>
+        </section>
+
+        <main class="content-area">
+            <!-- Daily checklist -->
+            <section class="main-panel view-panel active" id="routine-view-panel" role="tabpanel" aria-labelledby="tab-routine-btn">
+                <div class="section-header" style="margin-bottom: 1.5rem;">
+                    <h2>Today's Routine Checklist</h2>
+                    <p>Check off items as you complete them today. To add or remove items from this list, head over to the 'Manage Routine' tab.</p>
+                </div>
+
+                <div class="progress-summary" id="today-progress-summary">
+                    <div class="progress-track">
+                        <div class="progress-fill" id="today-progress-fill"></div>
+                    </div>
+                    <span class="progress-label" id="today-progress-label">0 / 0 complete</span>
+                </div>
+
+                <ul class="task-list" id="routine-checklist-element"></ul>
+
+                <section class="thirty-day-section">
+                    <div class="section-header">
+                        <h2>Last 30 Days</h2>
+                        <p>A quick look at your consistency — darker green means a more complete day.</p>
+                    </div>
+                    <div class="heatmap-grid" id="routine-heatmap-grid" role="img" aria-label="Heatmap of completion over the last 30 days"></div>
+                    <div class="heatmap-legend" aria-hidden="true">
+                        <span>Less</span>
+                        <span class="legend-swatch" style="--legend-alpha:0.12"></span>
+                        <span class="legend-swatch" style="--legend-alpha:0.35"></span>
+                        <span class="legend-swatch" style="--legend-alpha:0.6"></span>
+                        <span class="legend-swatch" style="--legend-alpha:0.85"></span>
+                        <span class="legend-swatch" style="--legend-alpha:1"></span>
+                        <span>More</span>
+                    </div>
+                </section>
+            </section>
+
+            <!-- Calendar + trends -->
+            <section class="main-panel view-panel" id="calendar-view-panel" role="tabpanel" aria-labelledby="tab-calendar-btn">
+                <div class="section-header pdf-section-header">
+                    <div>
+                        <h2>Monthly Completion Log</h2>
+                        <p>Track history grid layouts detailing past execution percentages per frame block.</p>
+                    </div>
+                    <button type="button" class="btn-primary pdf-download-btn" id="pdf-download-btn" onclick="downloadMonthlyReportPDF()">
+                        <span class="material-icons-round" aria-hidden="true">picture_as_pdf</span>
+                        Download PDF Report
+                    </button>
+                </div>
+
+                <div class="calendar-grid" id="weekdays-header">
+                    <div class="weekday">SUN</div><div class="weekday">MON</div><div class="weekday">TUE</div>
+                    <div class="weekday">WED</div><div class="weekday">THU</div><div class="weekday">FRI</div>
+                    <div class="weekday">SAT</div>
+                </div>
+                <div class="calendar-grid" id="calendar-days-container"></div>
+
+                <section class="scrolled-chart-section">
+                    <div class="section-header">
+                        <h2>30-Day Performance Trends</h2>
+                        <p>Scroll down to analyze your long-term consistency graph and cyclical execution trends.</p>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="monthlyTrendsChart" role="img" aria-label="Line chart of completion percentage over the last 30 days"></canvas>
+                    </div>
+                </section>
+            </section>
+
+            <!-- Manage routine -->
+            <section class="main-panel view-panel" id="manage-view-panel" role="tabpanel" aria-labelledby="tab-manage-btn">
+                <div class="section-header" style="margin-bottom: 1.5rem;">
+                    <h2>Configure Base Routine</h2>
+                    <p>Add new tracking parameters or retire existing activities permanently here. Changes sync instantly.</p>
+                </div>
+
+                <div class="task-input-group">
+                    <input type="text" id="master-routine-input" placeholder="Enter routine activity (e.g. Study Physics, Practice Code)..." maxlength="60" aria-label="New routine activity name">
+                    <input type="time" id="master-routine-time" aria-label="Scheduled time for this activity (optional)">
+                    <button type="button" class="btn-primary" onclick="addMasterItem()">Add Activity</button>
+                </div>
+                <p class="form-feedback" id="master-feedback" role="alert"></p>
+
+                <h3 style="margin-top: 2rem; font-size: 1.1rem; color: var(--text-secondary);">Active Monitored Tasks</h3>
+                <ul class="task-list" id="master-configuration-list-element"></ul>
+            </section>
+        </main>
+
+    </div>
+
+    <!-- Floating AI Habit Coach launcher -->
+    <button type="button" class="ai-coach-fab" id="ai-coach-fab" aria-label="Open AI Habit Coach" aria-haspopup="dialog" aria-controls="ai-coach-overlay" title="AI Habit Coach">
+        <span aria-hidden="true">🧠</span>
+    </button>
+
+    <!-- AI Habit Coach chat panel -->
+    <div class="ai-coach-overlay" id="ai-coach-overlay" role="dialog" aria-modal="true" aria-labelledby="ai-coach-title" style="display:none;" onclick="if (event.target === this) closeCoachModal()">
+        <div class="ai-coach-card">
+            <div class="ai-coach-header">
+                <div class="ai-coach-title-group">
+                    <span class="ai-coach-badge" aria-hidden="true">🧠</span>
+                    <div>
+                        <h2 id="ai-coach-title">AI Habit Coach</h2>
+                        <p class="ai-coach-subtitle">Chat resets when you refresh the page.</p>
+                    </div>
+                </div>
+                <button type="button" class="help-close-btn" id="ai-coach-close-btn" onclick="closeCoachModal()" aria-label="Close AI Habit Coach">
+                    <span class="material-icons-round" aria-hidden="true">close</span>
+                </button>
+            </div>
+
+            <div class="ai-coach-messages" id="ai-coach-messages">
+                <div class="coach-msg coach-msg-coach">Hi! I'm your AI Habit Coach. Ask me about your streaks, today's routine, or how to stay consistent.</div>
+            </div>
+
+            <div class="ai-coach-input-row">
+                <input type="text" id="ai-coach-input" placeholder="Ask your coach anything..." maxlength="2000" aria-label="Message the AI Habit Coach">
+                <button type="button" class="btn-icon ai-coach-send-btn" id="ai-coach-send-btn" aria-label="Send message">
+                    <span class="material-icons-round" aria-hidden="true">send</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Core state, storage, and date helpers used by every other module -->
+    <script src="script.js"></script>
+    <!-- Supabase auth + cloud sync -->
+    <script src="auth.js"></script>
+    <!-- Calendar workspace rendering -->
+    <script src="calendar.js"></script>
+    <!-- Metrics, charts, and PDF report generation -->
+    <script src="analytics.js"></script>
+    <!-- Theme, tabs, checklist, and management-panel UI -->
+    <script src="ui.js"></script>
+    <!-- AI Habit Coach: talks to our Netlify Function, never to Gemini directly -->
+    <script src="ai.js"></script>
+</body>
+</html>

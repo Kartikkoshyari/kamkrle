@@ -1,0 +1,10 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+# Lets the frontend call a short, clean path instead of the full
+# /.netlify/functions/coach URL.
+[[redirects]]
+  from = "/api/coach"
+  to = "/.netlify/functions/coach"
+  status = 200
