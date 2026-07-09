@@ -73,7 +73,7 @@ exports.handler = async (event) => {
         };
     } catch (err) {
         console.error('Coach request failed:', err);
-        return { statusCode: 502, body: JSON.stringify({ error: 'Could not reach the AI coach. Please try again.' }) };
+        return { statusCode: 502, body: JSON.stringify({ error: 'err.message || 'Could not reach the AI coach.'.' }) };
     }
 };
 
