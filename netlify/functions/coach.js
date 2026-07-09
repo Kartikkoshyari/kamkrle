@@ -17,33 +17,35 @@
 // conversation is persisted here or in Supabase — each request carries
 // whatever history the browser still has in memory.
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 
-const SYSTEM_PROMPT = `You are the "AI Habit Coach" inside Kamkrle, a daily habit/routine tracker.
-You give brief, encouraging, practical coaching based on the user's actual habit data below.
-Keep replies short (2-5 sentences unless asked for more detail), concrete, and specific to their
-data rather than generic advice. Never invent numbers that weren't given to you. If the data shows
-no activity yet, gently encourage them to start rather than commenting on "failure".`;
+const SYSTEM_PROMPT = "You are the \"AI Habit Coach\" inside Kamkrle, a daily habit/routine tracker.\n" +
+    "You give brief, encouraging, practical coaching based on the user's actual habit data below.\n" +
+    "Keep replies short (2-5 sentences unless asked for more detail), concrete, and specific to their\n" +
+    "data rather than generic advice. Never invent numbers that weren't given to you. If the data shows\n" +
+    "no activity yet, gently encourage them to start rather than commenting on \"failure\".";
 
 exports.handler = async (event) => {
-    if (event.httpMethod !== 'POST') {
-        return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+    if (event.httpMethod !== "POST") {
+        return { statusCode: 405, body: JSON.stringify({ error: "Method not allowed" }) };
     }
 
     let payload;
     try {
-        payload = JSON.parse(event.body || '{}');
+        payload = JSON.parse(event.body || "{}");
     } catch (e) {
-        return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) };
+        return { statusCode: 400, body: JSON.stringify({ error: "Invalid JSON body" }) };
     }
 
-    const { message, history, habitContext } = payload;
+    const message = payload.message;
+    const history = payload.history;
+    const habitContext = payload.habitContext;
 
-    if (!message || typeof message !== 'string' || !message.trim()) {
-        return { statusCode: 400, body: JSON.stringify({ error: 'Message is required' }) };
+    if (!message || typeof message !== "string" || !message.trim()) {
+        return { statusCode: 400, body: JSON.stringify({ error: "Message is required" }) };
     }
     if (message.length > 2000) {
-        return { statusCode: 400, body: JSON.stringify({ error: 'Message too long' }) };
+        return { statusCode: 400, body: JSON.stringify({ error: "Message too long" }) };
     }
 
     // ---------- Optional caller verification ----------
@@ -52,28 +54,32 @@ exports.handler = async (event) => {
     // user and not just anyone hammering this endpoint directly.
     const authHeader = event.headers.authorization || event.headers.Authorization;
     if (authHeader) {
-        const token = authHeader.replace(/^Bearer\s+/i, '');
+        const token = authHeader.replace(/^Bearer\s+/i, "");
         const verified = await verifySupabaseToken(token);
         if (!verified) {
-            return { statusCode: 401, body: JSON.stringify({ error: 'Invalid session' }) };
+            return { statusCode: 401, body: JSON.stringify({ error: "Invalid session" }) };
         }
     }
 
     if (!process.env.GEMINI_API_KEY) {
-        console.error('GEMINI_API_KEY is not configured');
-        return { statusCode: 500, body: JSON.stringify({ error: 'Coach is not configured yet.' }) };
+        console.error("GEMINI_API_KEY is not configured");
+        return { statusCode: 500, body: JSON.stringify({ error: "Coach is not configured yet." }) };
     }
 
     try {
         const reply = await callGemini(message, Array.isArray(history) ? history : [], habitContext);
         return {
             statusCode: 200,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reply }),
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reply: reply }),
         };
     } catch (err) {
-        console.error('Coach request failed:', err);
-        return { statusCode: 502, body: JSON.stringify({ error: 'err.message || 'Could not reach the AI coach.'.' }) };
+        console.error("Coach request failed:", err);
+        // TEMP DEBUG: exposing err.message to the client so we can see the
+        // real failure reason in the browser Network tab. Revert this to a
+        // generic message once things are working.
+        const debugMessage = (err && err.message) ? err.message : "Could not reach the AI coach.";
+        return { statusCode: 502, body: JSON.stringify({ error: debugMessage }) };
     }
 };
 
@@ -82,9 +88,9 @@ exports.handler = async (event) => {
 async function verifySupabaseToken(token) {
     if (!token || !process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
     try {
-        const res = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
+        const res = await fetch(process.env.SUPABASE_URL + "/auth/v1/user", {
             headers: {
-                Authorization: `Bearer ${token}`,
+                Authorization: "Bearer " + token,
                 apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
             },
         });
@@ -98,37 +104,40 @@ async function verifySupabaseToken(token) {
 // Builds the Gemini request and returns the reply text.
 async function callGemini(message, history, habitContext) {
     const contextBlock = habitContext
-        ? `Here is the user's current habit data (JSON):\n${JSON.stringify(habitContext)}`
-        : `No habit data was provided.`;
+        ? "Here is the user's current habit data (JSON):\n" + JSON.stringify(habitContext)
+        : "No habit data was provided.";
 
     // Gemini's REST API takes a flat list of turns; we translate our simple
     // { role: 'user' | 'coach', text }[] history into that shape and append
     // the new message last.
     const turns = history
-        .filter(h => h && typeof h.text === 'string' && (h.role === 'user' || h.role === 'coach'))
+        .filter(function (h) { return h && typeof h.text === "string" && (h.role === "user" || h.role === "coach"); })
         .slice(-10) // keep the request small; session-only memory anyway
-        .map(h => ({
-            role: h.role === 'coach' ? 'model' : 'user',
-            parts: [{ text: h.text }],
-        }));
+        .map(function (h) {
+            return {
+                role: h.role === "coach" ? "model" : "user",
+                parts: [{ text: h.text }],
+            };
+        });
 
-    turns.push({ role: 'user', parts: [{ text: message }] });
+    turns.push({ role: "user", parts: [{ text: message }] });
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODEL +
+        ":generateContent?key=" + process.env.GEMINI_API_KEY;
 
     const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            systemInstruction: { parts: [{ text: `${SYSTEM_PROMPT}\n\n${contextBlock}` }] },
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT + "\n\n" + contextBlock }] },
             contents: turns,
             generationConfig: { temperature: 0.7, maxOutputTokens: 400 },
         }),
     });
 
     if (!res.ok) {
-        const errBody = await res.text().catch(() => '');
-        throw new Error(`Gemini API error ${res.status}: ${errBody}`);
+        const errBody = await res.text().catch(function () { return ""; });
+        throw new Error("Gemini API error " + res.status + ": " + errBody);
     }
 
     const data = await res.json();
@@ -136,6 +145,6 @@ async function callGemini(message, history, habitContext) {
         && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
         && data.candidates[0].content.parts[0].text;
 
-    if (!text) throw new Error('Gemini returned no reply text');
+    if (!text) throw new Error("Gemini returned no reply text");
     return text.trim();
 }
